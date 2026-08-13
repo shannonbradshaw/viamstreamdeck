@@ -156,7 +156,27 @@ type streamdeckComponent struct {
 	tsCancel  context.CancelFunc
 	tsApplied tsLoopKey
 
+	// polledMode is the mode most recently seen in a touchscreen poll response.
+	// The poll runs with configLock held and setPage takes configLock, so the
+	// switch itself happens in stateChecker, outside the lock, and only when
+	// the mode changes — a manually-selected page (e.g. "1.5") survives as
+	// long as the component's mode holds steady. Guarded by polledMu.
+	polledMu   sync.Mutex
+	polledMode string
+
 	closed atomic.Int32
+}
+
+func (sdc *streamdeckComponent) notePolledMode(mode string) {
+	sdc.polledMu.Lock()
+	defer sdc.polledMu.Unlock()
+	sdc.polledMode = mode
+}
+
+func (sdc *streamdeckComponent) getPolledMode() string {
+	sdc.polledMu.Lock()
+	defer sdc.polledMu.Unlock()
+	return sdc.polledMode
 }
 
 func (sdc *streamdeckComponent) updateBrightness(level int) error {
@@ -576,11 +596,25 @@ func (sdc *streamdeckComponent) Name() resource.Name {
 }
 
 func (sdc *streamdeckComponent) stateChecker() {
+	lastFollowedMode := ""
 	for sdc.closed.Load() == 0 {
 
 		err := sdc.reconfigure(context.Background(), sdc.deps, sdc.conf)
 		if err != nil {
 			sdc.logger.Errorf("can't reconfigure: %v", err)
+		}
+
+		// Follow autonomous mode changes observed by the touchscreen poll:
+		// switch pages only when the mode CHANGES, so a manually-selected page
+		// sticks while the mode holds steady. lastFollowedMode advances even
+		// when the page doesn't exist, to avoid retrying every second.
+		if mode := sdc.getPolledMode(); mode != "" && mode != lastFollowedMode {
+			if err := sdc.setPage(context.Background(), mode); err != nil {
+				sdc.logger.Warnf("not following polled mode %q: %v", mode, err)
+			} else {
+				sdc.logger.Infof("following polled mode change to page %q", mode)
+			}
+			lastFollowedMode = mode
 		}
 
 		time.Sleep(time.Second)

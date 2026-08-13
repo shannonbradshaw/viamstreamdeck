@@ -113,6 +113,13 @@ func (sdc *streamdeckComponent) resolveTouchscreenText(ctx context.Context, tc *
 		return sdc.currentText()
 	}
 
+	// Poll responses carry the component's mode just like button responses do;
+	// record it so stateChecker can follow autonomous mode changes (e.g. a
+	// fault entering ERROR) that no button press would otherwise surface.
+	if mode, ok := extractMode(res); ok {
+		sdc.notePolledMode(mode)
+	}
+
 	var val interface{}
 	if tc.Field != "" {
 		val = res[tc.Field]
